@@ -221,6 +221,48 @@
         osc.start(t);
         osc.stop(t + 0.1);
       });
+    },
+
+    shieldOn() {
+      const ac = ensureAudio();
+      const osc = ac.createOscillator();
+      const gain = ac.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(400, ac.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(800, ac.currentTime + 0.1);
+      gain.gain.setValueAtTime(0.1, ac.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 0.1);
+      osc.connect(gain).connect(ac.destination);
+      osc.start(ac.currentTime);
+      osc.stop(ac.currentTime + 0.1);
+    },
+
+    shieldOff() {
+      const ac = ensureAudio();
+      const osc = ac.createOscillator();
+      const gain = ac.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(800, ac.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(300, ac.currentTime + 0.1);
+      gain.gain.setValueAtTime(0.1, ac.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 0.1);
+      osc.connect(gain).connect(ac.destination);
+      osc.start(ac.currentTime);
+      osc.stop(ac.currentTime + 0.1);
+    },
+
+    shieldBlock() {
+      const ac = ensureAudio();
+      const osc = ac.createOscillator();
+      const gain = ac.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(1200, ac.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(600, ac.currentTime + 0.06);
+      gain.gain.setValueAtTime(0.12, ac.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 0.06);
+      osc.connect(gain).connect(ac.destination);
+      osc.start(ac.currentTime);
+      osc.stop(ac.currentTime + 0.06);
     }
   };
 
@@ -228,7 +270,7 @@
   const keys = {};
   window.addEventListener('keydown', e => {
     keys[e.code] = true;
-    if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) {
+    if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'ShiftLeft', 'ShiftRight'].includes(e.code)) {
       e.preventDefault();
     }
   });
@@ -240,7 +282,8 @@
     player = {
       x: W / 2, y: H - 60, w: 28, h: 28,
       speed: 280, lives: 3,
-      invulnTimer: 0, shootCooldown: 0
+      invulnTimer: 0, shootCooldown: 0,
+      shieldActive: false, shieldEnergy: 100, shieldCooldown: 0
     };
   }
 
@@ -470,9 +513,36 @@
   }
 
   // --- Player ---
+  let shieldKeyWasDown = false;
+
   function updatePlayer() {
     if (player.invulnTimer > 0) player.invulnTimer -= dt;
+    if (player.shieldCooldown > 0) player.shieldCooldown -= dt;
     player.shootCooldown -= dt;
+
+    const shieldKeyDown = keys['ShiftLeft'] || keys['ShiftRight'];
+    if (shieldKeyDown && !shieldKeyWasDown) {
+      if (player.shieldActive) {
+        player.shieldActive = false;
+        sfx.shieldOff();
+      } else if (player.shieldEnergy > 5 && player.shieldCooldown <= 0) {
+        player.shieldActive = true;
+        sfx.shieldOn();
+      }
+    }
+    shieldKeyWasDown = shieldKeyDown;
+
+    if (player.shieldActive) {
+      player.shieldEnergy -= 30 * dt;
+      if (player.shieldEnergy <= 0) {
+        player.shieldEnergy = 0;
+        player.shieldActive = false;
+        player.shieldCooldown = 1;
+        sfx.shieldOff();
+      }
+    } else {
+      player.shieldEnergy = Math.min(100, player.shieldEnergy + 12 * dt);
+    }
 
     const left = keys['ArrowLeft'] || keys['KeyA'];
     const right = keys['ArrowRight'] || keys['KeyD'];
@@ -481,7 +551,7 @@
     if (right) player.x += player.speed * dt;
     player.x = Math.max(player.w / 2 + 4, Math.min(W - player.w / 2 - 4, player.x));
 
-    if (keys['Space'] && player.shootCooldown <= 0) {
+    if (!player.shieldActive && keys['Space'] && player.shootCooldown <= 0) {
       player.shootCooldown = 0.18;
       spawnBullet(player.x, player.y - player.h / 2, -500, true);
       sfx.shoot();
@@ -526,6 +596,35 @@
 
     ctx.shadowBlur = 0;
     ctx.restore();
+
+    if (player.shieldActive) {
+      ctx.save();
+      ctx.translate(player.x, player.y);
+      const radius = 26;
+      const pulse = 0.6 + Math.sin(frameCount * 0.15) * 0.15;
+      ctx.strokeStyle = `rgba(80, 200, 255, ${pulse})`;
+      ctx.shadowColor = '#0af';
+      ctx.shadowBlur = 18;
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      for (let i = 0; i < 6; i++) {
+        const a = (Math.PI / 3) * i - Math.PI / 2;
+        const px = Math.cos(a) * radius;
+        const py = Math.sin(a) * radius;
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+      ctx.stroke();
+
+      ctx.strokeStyle = `rgba(160, 230, 255, ${pulse * 0.4})`;
+      ctx.lineWidth = 6;
+      ctx.shadowBlur = 0;
+      ctx.stroke();
+
+      ctx.shadowBlur = 0;
+      ctx.restore();
+    }
   }
 
   // --- Collisions ---
@@ -555,6 +654,18 @@
           }
         }
       } else {
+        const shieldRadius = 26;
+        if (player.shieldActive) {
+          const dx = b.x - player.x;
+          const dy = b.y - player.y;
+          if (Math.sqrt(dx * dx + dy * dy) < shieldRadius + 6) {
+            bullets.splice(i, 1);
+            spawnExplosion(b.x, b.y, '#0af', 6);
+            sfx.shieldBlock();
+            player.shieldEnergy = Math.max(0, player.shieldEnergy - 5);
+            continue;
+          }
+        }
         if (player.invulnTimer <= 0 &&
             aabb(b.x, b.y, b.w, b.h, player.x, player.y, player.w, player.h)) {
           bullets.splice(i, 1);
@@ -587,6 +698,7 @@
     bullets = [];
     particles = [];
     resetPlayer();
+    shieldKeyWasDown = false;
     formationX = 0;
     spawnWave();
     sfx.startGame();
@@ -627,6 +739,20 @@
       ctx.fillText('x2 STREAK!', W / 2, 36);
       ctx.globalAlpha = 1;
     }
+
+    const barW = 60, barH = 6, barX = 16, barY = 34;
+    ctx.fillStyle = '#222';
+    ctx.fillRect(barX, barY, barW, barH);
+    const energyFrac = player.shieldEnergy / 100;
+    const barColor = player.shieldActive ? '#0af' : (player.shieldCooldown > 0 ? '#555' : '#07a');
+    ctx.fillStyle = barColor;
+    ctx.fillRect(barX, barY, barW * energyFrac, barH);
+    ctx.strokeStyle = '#0af';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(barX, barY, barW, barH);
+    ctx.fillStyle = '#0af';
+    ctx.textAlign = 'left';
+    ctx.fillText('SHIELD', barX, barY + barH + 8);
   }
 
   function drawMiniShip(x, y) {
@@ -666,10 +792,11 @@
     ctx.fillStyle = '#888';
     ctx.fillText('ARROWS / A,D = MOVE', W / 2, H / 2 + 80);
     ctx.fillText('SPACE = SHOOT', W / 2, H / 2 + 104);
+    ctx.fillText('SHIFT = TOGGLE SHIELD', W / 2, H / 2 + 128);
 
     if (highScore > 0) {
       ctx.fillStyle = '#ff0';
-      ctx.fillText('HIGH SCORE: ' + highScore, W / 2, H / 2 + 150);
+      ctx.fillText('HIGH SCORE: ' + highScore, W / 2, H / 2 + 170);
     }
 
     ctx.restore();
