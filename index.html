@@ -90,6 +90,13 @@
   let lastTime = 0;
   let dt = 0;
 
+  // --- Level system ---
+  let level = 1;
+  let xp = 0;
+  let xpToNext = 100;
+  let levelUpTimer = 0;
+  let levelUpBonusText = '';
+
   // --- Audio (Web Audio API, synthesized retro sounds) ---
   let audioCtx;
   function ensureAudio() {
@@ -263,6 +270,33 @@
       osc.connect(gain).connect(ac.destination);
       osc.start(ac.currentTime);
       osc.stop(ac.currentTime + 0.06);
+    },
+
+    levelUp() {
+      const ac = ensureAudio();
+      const notes = [523, 659, 784, 1047, 1319];
+      notes.forEach((freq, i) => {
+        const osc = ac.createOscillator();
+        const gain = ac.createGain();
+        osc.type = 'square';
+        const t = ac.currentTime + i * 0.07;
+        osc.frequency.setValueAtTime(freq, t);
+        gain.gain.setValueAtTime(0.13, t);
+        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.14);
+        osc.connect(gain).connect(ac.destination);
+        osc.start(t);
+        osc.stop(t + 0.14);
+      });
+      const osc2 = ac.createOscillator();
+      const g2 = ac.createGain();
+      osc2.type = 'sine';
+      osc2.frequency.setValueAtTime(1047, ac.currentTime + 0.35);
+      osc2.frequency.exponentialRampToValueAtTime(2094, ac.currentTime + 0.55);
+      g2.gain.setValueAtTime(0.08, ac.currentTime + 0.35);
+      g2.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 0.55);
+      osc2.connect(g2).connect(ac.destination);
+      osc2.start(ac.currentTime + 0.35);
+      osc2.stop(ac.currentTime + 0.55);
     }
   };
 
@@ -541,7 +575,7 @@
         sfx.shieldOff();
       }
     } else {
-      player.shieldEnergy = Math.min(100, player.shieldEnergy + 12 * dt);
+      player.shieldEnergy = Math.min(100, player.shieldEnergy + getShieldRegenRate() * dt);
     }
 
     const left = keys['ArrowLeft'] || keys['KeyA'];
@@ -552,8 +586,8 @@
     player.x = Math.max(player.w / 2 + 4, Math.min(W - player.w / 2 - 4, player.x));
 
     if (!player.shieldActive && keys['Space'] && player.shootCooldown <= 0) {
-      player.shootCooldown = 0.18;
-      spawnBullet(player.x, player.y - player.h / 2, -500, true);
+      player.shootCooldown = getShootCooldown();
+      spawnBullet(player.x, player.y - player.h / 2, getBulletSpeed(), true);
       sfx.shoot();
     }
   }
@@ -647,7 +681,9 @@
             bullets.splice(i, 1);
             streak++;
             const bonus = streak >= 5 ? 2 : 1;
-            score += e.points * bonus;
+            const pts = e.points * bonus;
+            score += pts;
+            gainXP(pts);
             spawnExplosion(e.x, e.y, e.color, 18);
             sfx.explode();
             break;
@@ -689,12 +725,68 @@
     }
   }
 
+  // --- Level system logic ---
+  function xpForLevel(lvl) {
+    return Math.floor(100 * Math.pow(1.4, lvl - 1));
+  }
+
+  function gainXP(amount) {
+    xp += amount;
+    while (xp >= xpToNext) {
+      xp -= xpToNext;
+      level++;
+      xpToNext = xpForLevel(level);
+      applyLevelUp();
+    }
+  }
+
+  function applyLevelUp() {
+    sfx.levelUp();
+    levelUpTimer = 2.5;
+    shakeTimer = 0.15;
+    shakeIntensity = 3;
+    spawnExplosion(player.x, player.y, '#ff0', 30);
+    spawnExplosion(player.x, player.y, '#f80', 20);
+
+    player.speed += 12;
+
+    if (player.shootCooldown > 0.08) {
+      player.shootCooldown = Math.max(0.08, player.shootCooldown - 0.01);
+    }
+
+    if (level % 3 === 0) {
+      player.lives++;
+      levelUpBonusText = 'LEVEL ' + level + ' - EXTRA LIFE!';
+    } else if (level % 2 === 0) {
+      levelUpBonusText = 'LEVEL ' + level + ' - SHIELD BOOST!';
+    } else {
+      levelUpBonusText = 'LEVEL ' + level + ' - SPEED UP!';
+    }
+  }
+
+  function getShootCooldown() {
+    return Math.max(0.08, 0.18 - (level - 1) * 0.012);
+  }
+
+  function getBulletSpeed() {
+    return -(500 + (level - 1) * 20);
+  }
+
+  function getShieldRegenRate() {
+    return 12 + (level - 1) * 2;
+  }
+
   // --- Game state transitions ---
   function startGame() {
     state = STATE.PLAYING;
     score = 0;
     wave = 0;
     streak = 0;
+    level = 1;
+    xp = 0;
+    xpToNext = xpForLevel(1);
+    levelUpTimer = 0;
+    levelUpBonusText = '';
     bullets = [];
     particles = [];
     resetPlayer();
@@ -712,6 +804,37 @@
     }
     spawnExplosion(player.x, player.y, '#f44', 40);
     sfx.gameOverSound();
+  }
+
+  // --- Level-up notification ---
+  function drawLevelUpNotification() {
+    if (levelUpTimer <= 0) return;
+    levelUpTimer -= dt;
+
+    const alpha = levelUpTimer > 2 ? 1 : levelUpTimer / 2;
+    const yOffset = (2.5 - levelUpTimer) * 20;
+
+    ctx.save();
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    ctx.font = '16px "Press Start 2P", monospace';
+    ctx.shadowColor = '#ff0';
+    ctx.shadowBlur = 25;
+    ctx.fillStyle = `rgba(255, 255, 0, ${alpha})`;
+    ctx.fillText(levelUpBonusText, W / 2, H / 2 - 60 - yOffset);
+
+    const barProgress = xp / xpToNext;
+    const barW = 160, barH = 8;
+    ctx.globalAlpha = alpha * 0.7;
+    ctx.fillStyle = '#333';
+    ctx.fillRect(W / 2 - barW / 2, H / 2 - 40 - yOffset, barW, barH);
+    ctx.fillStyle = '#ff0';
+    ctx.fillRect(W / 2 - barW / 2, H / 2 - 40 - yOffset, barW * barProgress, barH);
+    ctx.globalAlpha = 1;
+
+    ctx.shadowBlur = 0;
+    ctx.restore();
   }
 
   // --- HUD ---
@@ -753,6 +876,19 @@
     ctx.fillStyle = '#0af';
     ctx.textAlign = 'left';
     ctx.fillText('SHIELD', barX, barY + barH + 8);
+
+    // XP bar
+    const xpBarY = barY + barH + 24;
+    const xpFrac = xp / xpToNext;
+    ctx.fillStyle = '#222';
+    ctx.fillRect(barX, xpBarY, barW, barH);
+    ctx.fillStyle = '#ff0';
+    ctx.fillRect(barX, xpBarY, barW * xpFrac, barH);
+    ctx.strokeStyle = '#ff0';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(barX, xpBarY, barW, barH);
+    ctx.fillStyle = '#ff0';
+    ctx.fillText('LV' + level, barX, xpBarY + barH + 8);
   }
 
   function drawMiniShip(x, y) {
@@ -819,17 +955,21 @@
     ctx.fillStyle = '#fff';
     ctx.fillText('SCORE: ' + score, W / 2, H / 2 + 10);
 
+    ctx.fillStyle = '#ff0';
+    ctx.font = '10px "Press Start 2P", monospace';
+    ctx.fillText('LEVEL: ' + level + '  WAVE: ' + wave, W / 2, H / 2 + 36);
+
     if (score >= highScore && score > 0) {
       ctx.fillStyle = '#ff0';
       ctx.font = '10px "Press Start 2P", monospace';
-      ctx.fillText('NEW HIGH SCORE!', W / 2, H / 2 + 40);
+      ctx.fillText('NEW HIGH SCORE!', W / 2, H / 2 + 58);
     }
 
     ctx.fillStyle = '#0ff';
     ctx.font = '10px "Press Start 2P", monospace';
     const blink = Math.sin(frameCount * 0.08) > 0;
     if (blink) {
-      ctx.fillText('PRESS SPACE TO RESTART', W / 2, H / 2 + 80);
+      ctx.fillText('PRESS SPACE TO RESTART', W / 2, H / 2 + 96);
     }
 
     ctx.restore();
@@ -888,6 +1028,7 @@
       drawEnemies();
       drawPlayer();
       drawHUD();
+      drawLevelUpNotification();
     } else if (state === STATE.TITLE) {
       drawTitle();
     } else if (state === STATE.GAME_OVER) {
